@@ -4,9 +4,18 @@
 import base64, json, gzip, httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 
 app = FastAPI(title="Miruro API", version="2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
