@@ -1,68 +1,24 @@
-import base64, json, gzip, httpx, os
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
-from dotenv import load_dotenv
+# uvicorn api:app --host 0.0.0.0 --port 8000
+# http://127.0.0.1:8000/
 
-load_dotenv()
+import base64, json, gzip, httpx
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
+from typing import Optional
 
 app = FastAPI(title="Miruro API", version="2.0")
 
-# --- Security Configuration ---
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
-API_KEY_NAME = "x-api-key"
-VALID_API_KEY = os.getenv("API_KEY")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.middleware("http")
-async def secure_api(request: Request, call_next):
-    # Allow home page (docs) without restrictions
-    if request.url.path in ["/", "/docs", "/redoc", "/openapi.json"]:
-        return await call_next(request)
-
-    # 1. Check API Key
-    api_key = request.headers.get(API_KEY_NAME)
-    if VALID_API_KEY and api_key == VALID_API_KEY:
-        return await call_next(request)
-
-    # 2. Check Origin or Referer
-    origin = request.headers.get("origin")
-    referer = request.headers.get("referer")
-
-    is_allowed = False
-    for allowed in ALLOWED_ORIGINS:
-        if (origin and origin.startswith(allowed)) or (referer and referer.startswith(allowed)):
-            is_allowed = True
-            break
-            
-    if not is_allowed:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Access forbidden: Invalid Origin, Referer, or API Key."}
-        )
-
-    return await call_next(request)
-
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://www.miruro.tv/"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Referer": "https://www.miruro.tv/",
+}
 ANILIST_URL = "https://graphql.anilist.co"
 MIRURO_PIPE_URL = "https://www.miruro.tv/api/secure/pipe"
 
-def _proxy_img(url: str) -> str:
-    # Proxy removed — return original image URL
-    return url
-
 
 def _proxy_deep_images(obj):
-    # Proxy removed — return data unchanged
     return obj
+
 
 def _inject_source_slugs(data: dict, anilist_id: int):
     """Transform episode IDs into simplified path-based slugs: watch/PROV/ALID/CAT/PREFIX-NUMBER"""
@@ -72,7 +28,6 @@ def _inject_source_slugs(data: dict, anilist_id: int):
             continue
         episodes = provider_data.get("episodes", {})
         if not isinstance(episodes, dict):
-            # Some providers return a flat list — wrap it
             if isinstance(episodes, list):
                 provider_data["episodes"] = {"sub": episodes}
                 episodes = provider_data["episodes"]
@@ -87,8 +42,11 @@ def _inject_source_slugs(data: dict, anilist_id: int):
                 if "id" in ep and "number" in ep:
                     orig_id = ep["id"]
                     prefix = orig_id.split(":")[0] if ":" in orig_id else orig_id
-                    ep["id"] = f"watch/{provider_name}/{anilist_id}/{category}/{prefix}-{ep['number']}"
+                    ep["id"] = (
+                        f"watch/{provider_name}/{anilist_id}/{category}/{prefix}-{ep['number']}"
+                    )
     return data
+
 
 async def _fetch_raw_episodes(anilist_id: int) -> dict:
     """Internal helper to fetch raw, decoded episode data from Miruro pipe."""
@@ -103,12 +61,13 @@ async def _fetch_raw_episodes(anilist_id: int) -> dict:
     async with httpx.AsyncClient(timeout=15.0) as client:
         res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         if res.status_code != 200:
-            raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+            raise HTTPException(
+                status_code=res.status_code, detail="Pipe request failed"
+            )
         data = _decode_pipe_response(res.text.strip())
         _deep_translate(data)
         return data
 
-# ─── Shared GraphQL Fragments ────────────────────────────────────────────────
 
 MEDIA_LIST_FIELDS = """
     id
@@ -217,13 +176,14 @@ MEDIA_FULL_FIELDS = """
     }
 """
 
-# ─── Utility Functions ───────────────────────────────────────────────────────
 
 def _translate_id(encoded_id: str) -> str:
     """Decode a base64-encoded episode ID back to plain text."""
     try:
-        decoded = base64.urlsafe_b64decode(encoded_id + '=' * (4 - len(encoded_id) % 4)).decode()
-        if ':' in decoded:
+        decoded = base64.urlsafe_b64decode(
+            encoded_id + "=" * (4 - len(encoded_id) % 4)
+        ).decode()
+        if ":" in decoded:
             return decoded
         return encoded_id
     except Exception:
@@ -234,7 +194,7 @@ def _deep_translate(obj):
     """Recursively walk a JSON structure and decode any base64 'id' fields."""
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if key == 'id' and isinstance(value, str):
+            if key == "id" and isinstance(value, str):
                 obj[key] = _translate_id(value)
             elif isinstance(value, (dict, list)):
                 _deep_translate(value)
@@ -247,16 +207,16 @@ def _deep_translate(obj):
 def _decode_pipe_response(encoded_str: str) -> dict:
     """Decode a base64+gzip pipe response into a plain dict."""
     try:
-        encoded_str += '=' * (4 - len(encoded_str) % 4)
+        encoded_str += "=" * (4 - len(encoded_str) % 4)
         compressed = base64.urlsafe_b64decode(encoded_str)
-        return json.loads(gzip.decompress(compressed).decode('utf-8'))
+        return json.loads(gzip.decompress(compressed).decode("utf-8"))
     except Exception:
         raise ValueError("Failed to decode pipe response")
 
 
 def _encode_pipe_request(payload: dict) -> str:
     """Encode a dict into the base64 format expected by the pipe endpoint."""
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
 
 async def _anilist_query(query: str, variables: dict = None):
@@ -270,8 +230,6 @@ async def _anilist_query(query: str, variables: dict = None):
             raise HTTPException(status_code=500, detail="AniList query failed")
         return res.json().get("data", {})
 
-
-# ─── Homepage ────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -321,7 +279,7 @@ async def home():
 <body>
     <div class="container">
         <div class="header">
-            <img src="https://www.miruro.to/icon-512x512.png" alt="Logo" class="logo">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/c/c2/LOGO_TEMAN_JOKOWI.jpg" alt="Logo" class="logo">
             <h1>Miruro Native API</h1>
             <div class="subtitle">Decrypted, bypassed, and reverse-engineered anime streaming API</div>
             <div class="version">v2.0 — Full Data &amp; Pagination</div>
@@ -514,8 +472,6 @@ async def home():
 </html>"""
 
 
-# ─── Search & Suggestions ───────────────────────────────────────────────────
-
 @app.get("/search")
 async def search_anime(
     query: str,
@@ -533,7 +489,9 @@ async def search_anime(
         }}
     }}
     """
-    data = await _anilist_query(gql, {"search": query, "page": page, "perPage": per_page})
+    data = await _anilist_query(
+        gql, {"search": query, "page": page, "perPage": per_page}
+    )
     page_data = data.get("Page", {})
     page_info = page_data.get("pageInfo", {})
     response = {
@@ -569,20 +527,20 @@ async def search_suggestions(
     data = await _anilist_query(gql, {"search": query})
     results = []
     for item in data.get("Page", {}).get("media", []):
-        results.append({
-            "id": item["id"],
-            "title": item["title"].get("english") or item["title"].get("romaji"),
-            "title_romaji": item["title"].get("romaji"),
-            "poster": item["coverImage"]["large"],
-            "format": item.get("format"),
-            "status": item.get("status"),
-            "year": (item.get("startDate") or {}).get("year"),
-            "episodes": item.get("episodes"),
-        })
+        results.append(
+            {
+                "id": item["id"],
+                "title": item["title"].get("english") or item["title"].get("romaji"),
+                "title_romaji": item["title"].get("romaji"),
+                "poster": item["coverImage"]["large"],
+                "format": item.get("format"),
+                "status": item.get("status"),
+                "year": (item.get("startDate") or {}).get("year"),
+                "episodes": item.get("episodes"),
+            }
+        )
     return _proxy_deep_images({"suggestions": results})
 
-
-# ─── Advanced Filter ─────────────────────────────────────────────────────────
 
 SORT_MAP = {
     "SCORE_DESC": "SCORE_DESC",
@@ -593,14 +551,19 @@ SORT_MAP = {
     "UPDATED_AT_DESC": "UPDATED_AT_DESC",
 }
 
+
 @app.get("/filter")
 async def filter_anime(
     genre: Optional[str] = Query(None, description="Genre name, e.g. Action, Romance"),
     tag: Optional[str] = Query(None, description="Tag name, e.g. Isekai, Time Skip"),
     year: Optional[int] = Query(None, description="Season year, e.g. 2025"),
     season: Optional[str] = Query(None, description="WINTER, SPRING, SUMMER, or FALL"),
-    format: Optional[str] = Query(None, description="TV, MOVIE, OVA, ONA, SPECIAL, MUSIC"),
-    status: Optional[str] = Query(None, description="RELEASING, FINISHED, NOT_YET_RELEASED, CANCELLED, HIATUS"),
+    format: Optional[str] = Query(
+        None, description="TV, MOVIE, OVA, ONA, SPECIAL, MUSIC"
+    ),
+    status: Optional[str] = Query(
+        None, description="RELEASING, FINISHED, NOT_YET_RELEASED, CANCELLED, HIATUS"
+    ),
     sort: str = Query("POPULARITY_DESC", description="Sort order"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=50),
@@ -667,9 +630,9 @@ async def filter_anime(
     return _proxy_deep_images(response)
 
 
-# ─── Collection Endpoints (with pagination) ─────────────────────────────────
-
-async def _fetch_collection(sort_type: str, status: str = None, page: int = 1, per_page: int = 20):
+async def _fetch_collection(
+    sort_type: str, status: str = None, page: int = 1, per_page: int = 20
+):
     """Internal helper for fetching collections like trending, popular, etc."""
     status_filter = f", status: {status}" if status else ""
     gql = f"""
@@ -736,7 +699,9 @@ async def get_upcoming(
     per_page: int = Query(20, ge=1, le=50),
 ):
     """Get upcoming anime with full metadata and pagination."""
-    return await _fetch_collection("POPULARITY_DESC", "NOT_YET_RELEASED", page=page, per_page=per_page)
+    return await _fetch_collection(
+        "POPULARITY_DESC", "NOT_YET_RELEASED", page=page, per_page=per_page
+    )
 
 
 @app.get("/recent")
@@ -745,7 +710,9 @@ async def get_recent(
     per_page: int = Query(20, ge=1, le=50),
 ):
     """Get currently airing anime with full metadata and pagination."""
-    return await _fetch_collection("START_DATE_DESC", "RELEASING", page=page, per_page=per_page)
+    return await _fetch_collection(
+        "START_DATE_DESC", "RELEASING", page=page, per_page=per_page
+    )
 
 
 @app.get("/schedule")
@@ -788,8 +755,6 @@ async def get_schedule(
     }
     return _proxy_deep_images(response)
 
-
-# ─── Anime Details ───────────────────────────────────────────────────────────
 
 @app.get("/info/{anilist_id}")
 async def get_anime_info(anilist_id: int):
@@ -846,7 +811,9 @@ async def get_anime_characters(
         }
     }
     """
-    data = await _anilist_query(gql, {"id": anilist_id, "page": page, "perPage": per_page})
+    data = await _anilist_query(
+        gql, {"id": anilist_id, "page": page, "perPage": per_page}
+    )
     media = data.get("Media")
     if not media:
         raise HTTPException(status_code=404, detail="Anime not found")
@@ -940,7 +907,9 @@ async def get_anime_recommendations(
         }
     }
     """
-    data = await _anilist_query(gql, {"id": anilist_id, "page": page, "perPage": per_page})
+    data = await _anilist_query(
+        gql, {"id": anilist_id, "page": page, "perPage": per_page}
+    )
     media = data.get("Media")
     if not media:
         raise HTTPException(status_code=404, detail="Anime not found")
@@ -956,8 +925,6 @@ async def get_anime_recommendations(
     return _proxy_deep_images(response)
 
 
-# ─── Streaming (Pipe-based — unchanged logic) ───────────────────────────────
-
 @app.get("/episodes/{anilist_id}")
 async def get_episodes(anilist_id: int):
     """Get the episode list for an anime, with slugified source IDs."""
@@ -967,13 +934,15 @@ async def get_episodes(anilist_id: int):
 
 @app.get("/sources")
 async def get_sources(
-    episodeId: str = Query(..., description="Plain-text episode ID from /episodes response"),
+    episodeId: str = Query(
+        ..., description="Plain-text episode ID from /episodes response"
+    ),
     provider: str = Query(..., description="Provider name, e.g. kiwi, arc, telli"),
     anilistId: int = Query(..., description="AniList anime ID"),
     category: str = Query("sub", description="sub or dub"),
 ):
     """Get M3U8 streaming sources for a specific episode."""
-    enc_id = base64.urlsafe_b64encode(episodeId.encode()).decode().rstrip('=')
+    enc_id = base64.urlsafe_b64encode(episodeId.encode()).decode().rstrip("=")
     payload = {
         "path": "sources",
         "method": "GET",
@@ -990,8 +959,11 @@ async def get_sources(
     async with httpx.AsyncClient(timeout=15.0) as client:
         res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         if res.status_code != 200:
-            raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+            raise HTTPException(
+                status_code=res.status_code, detail="Pipe request failed"
+            )
         return _proxy_deep_images(_decode_pipe_response(res.text.strip()))
+
 
 @app.get("/watch/{provider}/{anilist_id}/{category}/{slug}")
 async def get_watch_sources(provider: str, anilist_id: int, category: str, slug: str):
@@ -999,7 +971,7 @@ async def get_watch_sources(provider: str, anilist_id: int, category: str, slug:
     data = await _fetch_raw_episodes(anilist_id)
     prov_data = data.get("providers", {}).get(provider, {})
     ep_list = prov_data.get("episodes", {}).get(category, [])
-    
+
     # Resolve the slug back to the original ID
     target_id = None
     for ep in ep_list:
@@ -1009,8 +981,13 @@ async def get_watch_sources(provider: str, anilist_id: int, category: str, slug:
         if generated == slug:
             target_id = orig_id
             break
-            
+
     if not target_id:
-        raise HTTPException(status_code=404, detail=f"Episode slug '{slug}' not found for provider {provider}")
-        
-    return await get_sources(episodeId=target_id, provider=provider, anilistId=anilist_id, category=category)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Episode slug '{slug}' not found for provider {provider}",
+        )
+
+    return await get_sources(
+        episodeId=target_id, provider=provider, anilistId=anilist_id, category=category
+    )
